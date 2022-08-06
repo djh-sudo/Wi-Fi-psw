@@ -33,3 +33,7 @@
 
 # custom
 .vs/
+Debug/
+x64/
+*.filters
+*.user
