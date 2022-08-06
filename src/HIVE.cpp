@@ -239,3 +239,204 @@ BOOL QueryValue(IN P_HIVE_HANDLE hRegistry,
 	return status;
 }
 
+BOOL QueryInfoKey(IN P_HIVE_HANDLE hRegistry,
+	              IN HKEY hKey,
+	              OUT OPTIONAL LPWSTR lpClass,
+	              IN OUT OPTIONAL LPDWORD lpcClass,
+	              IN OPTIONAL LPDWORD lpReserved,
+	              OUT OPTIONAL LPDWORD lpcSubKeys,
+	              OUT OPTIONAL LPDWORD lpcMaxSubKeyLen) {
+	
+	BOOL status = FALSE;
+	P_HKEY_NAMED pKn;
+	DWORD szInCar;
+	pKn = hKey ? (P_HKEY_NAMED) hKey : hRegistry->pRootNamedKey;
+	do {
+		status = (pKn->tag == 'kn');
+		if (status == FALSE) {
+			break;
+		}
+
+		if(lpcSubKeys)
+			*lpcSubKeys = pKn->nbSubKeys;
+
+		if(lpcMaxSubKeyLen)
+			*lpcMaxSubKeyLen = pKn->szMaxSubKeyName / sizeof(wchar_t);
+
+		if (!lpcClass) {
+			break;
+		}
+		szInCar = pKn->szClassName / sizeof(wchar_t);
+		if (!lpClass) {
+			*lpcClass = szInCar;
+			break;
+		}
+		status = (*lpcClass > szInCar);
+		if (status == FALSE) {
+			*lpcClass = szInCar;
+			break;
+		}
+
+		memcpy(lpClass, &((P_HBIN_CELL) (hRegistry->pStartOf + pKn->offsetClassName))->data , pKn->szClassName);
+		lpClass[szInCar] = L'\0';
+		*lpcClass = szInCar;
+	}while(FALSE);
+
+	return status;
+}
+
+BOOL GetLSASyskey(IN P_HIVE_HANDLE hRegistry, HKEY hLSA, LPBYTE sysKey) {
+	const wchar_t * SYSKEY_NAMES[] = {L"JD", L"Skew1", L"GBG", L"Data"};
+	const BYTE SYSKEY_PERMUT[] = {11, 6, 7, 1, 8, 10, 14, 0, 3, 5, 2, 15, 13, 9, 12, 4};
+	
+	BOOL status = TRUE;
+	BYTE buffKey[SYSKEY_LENGTH] = { 0 };
+	wchar_t buffer[8 + 1] = { 0 };
+	DWORD szBuffer = 9;
+
+	HKEY hKey;
+	
+	for (DWORD i = 0; i < ARRAYSIZE(SYSKEY_NAMES) && status; ++i) {
+		status = FALSE;
+		if (OpenRegistryKey(hRegistry, hLSA, SYSKEY_NAMES[i], 0, KEY_READ, &hKey)) {
+			szBuffer = 8 + 1;
+			if (QueryInfoKey(hRegistry, hKey, buffer, &szBuffer, NULL, NULL, NULL)) {
+				status = (swscanf(buffer, L"%x", (DWORD *) &buffKey[i * sizeof(DWORD)]) != -1);
+			}
+		}
+		else {
+			break;
+		}
+	}
+	
+	if (status) {
+		for (DWORD i = 0; i < SYSKEY_LENGTH; ++i) {
+			sysKey[i] = buffKey[SYSKEY_PERMUT[i]];
+		}
+	}
+
+	return status;			
+}
+
+BOOL QueryWithAlloc(IN P_HIVE_HANDLE hRegistry,
+	                IN HKEY hKey,
+	                IN OPTIONAL LPCWSTR lpValueName,
+	                OUT OPTIONAL LPDWORD lpType,
+	                OUT OPTIONAL LPVOID *lpData,
+	                IN OUT OPTIONAL LPDWORD lpcbData) {
+	BOOL status = FALSE;
+	DWORD szNeeded  = 0;
+	if (QueryValue(hRegistry, hKey, lpValueName, NULL, lpType, NULL, &szNeeded)) {
+		do {
+			if (!szNeeded) {
+				break;
+			}
+			*lpData = new BYTE[szNeeded];
+			if (*lpData == NULL) {
+				break;
+			}
+			memset(*lpData, 0, szNeeded);
+			status = QueryValue(hRegistry, hKey, lpValueName, NULL, lpType,  (LPBYTE) *lpData, &szNeeded);
+			if (status == FALSE) {
+				delete[] (*lpData);
+				*lpData = NULL;
+				break;
+			}
+			if (!lpcbData) {
+				break;
+			}
+			*lpcbData = szNeeded;
+
+		}while(FALSE);
+	}
+
+	return status;
+}
+
+BOOL OpenAndQueryWithAlloc(IN P_HIVE_HANDLE hRegistry,
+	                       IN HKEY hKey,
+	                       IN OPTIONAL LPCWSTR lpSubKey,
+	                       IN OPTIONAL LPCWSTR lpValueName,
+	                       OUT OPTIONAL LPDWORD lpType,
+	                       OUT OPTIONAL LPVOID *lpData,
+	                       IN OUT OPTIONAL LPDWORD lpcbData){
+	BOOL status = FALSE;
+	HKEY hResult;
+	if (OpenRegistryKey(hRegistry, hKey, lpSubKey, 0, KEY_READ, &hResult)) {
+		status = QueryWithAlloc(hRegistry, hResult, lpValueName, lpType, lpData, lpcbData);
+	}
+	return status;
+}
+
+BOOL GetRegistryEnumKey(IN P_HIVE_HANDLE hRegistry,
+	                    IN HKEY hKey, IN DWORD dwIndex,
+	                    OUT LPWSTR lpName,
+	                    IN OUT LPDWORD lpcName,
+	                    IN LPDWORD lpReserved,
+	                    OUT OPTIONAL LPWSTR lpClass,
+	                    IN OUT OPTIONAL LPDWORD lpcClass) {
+
+	BOOL status = FALSE;
+	DWORD szInCar = 0;
+	P_HKEY_NAMED pKn = NULL, pCandidateKn = NULL;
+	P_HBIN_CELL pHbC = NULL;
+	P_HIVE_LF_LH pLfLh = NULL;
+	wchar_t * buffer = NULL;
+
+	pKn = (P_HKEY_NAMED) hKey;
+	do {
+		if (!pKn->nbSubKeys || (dwIndex >= pKn->nbSubKeys) || (pKn->offsetSubKeys == -1)) {
+			break;
+		}
+		pHbC = (P_HBIN_CELL)(hRegistry->pStartOf + pKn->offsetSubKeys);
+		if (pHbC->tag != 'fl' && pHbC->tag != 'hl') {
+			break;
+		}
+		pLfLh = (P_HIVE_LF_LH)pHbC;
+		if (!pLfLh->nbElements || (dwIndex >= pLfLh->nbElements)) {
+			break;
+		}
+		pCandidateKn = (P_HKEY_NAMED)(hRegistry->pStartOf + pLfLh->elements[dwIndex].offsetNamedKey);
+		do {
+			if (pCandidateKn->flags & HIVE_KEY_NAMED_FLAG_ASCII_NAME) {
+				szInCar = pCandidateKn->szKeyName;
+				status = (*lpcName > szInCar);
+				if (status == FALSE) {
+					break;
+				}
+				buffer = String2Unicode((char *)pCandidateKn->keyName,szInCar);
+				if (buffer == NULL) {
+					break;
+				}
+				memcpy(lpName, buffer, szInCar * sizeof(wchar_t));
+				delete[] buffer;
+			}
+			else {
+				szInCar = pCandidateKn->szClassName / sizeof(wchar_t);
+				status = (*lpcName > szInCar);
+				if (status == FALSE) {
+					break;
+				}
+				memcpy(lpName, pCandidateKn->keyName, pKn->szKeyName);
+			}
+		}while(FALSE);
+
+		if(status)
+			lpName[szInCar] = L'\0';
+		*lpcClass = szInCar;
+		if (lpcClass){
+			szInCar = pCandidateKn->szClassName / sizeof(wchar_t);
+			if(lpClass)
+			{
+				if(status = (*lpcClass > szInCar))
+				{
+					memcpy(lpClass, &((P_HBIN_CELL) (hRegistry->pStartOf + pCandidateKn->offsetClassName))->data , pCandidateKn->szClassName);
+					lpClass[szInCar] = L'\0';
+				}
+			}
+		}
+		*lpcClass = szInCar;
+		
+	}while(FALSE);
+	return status;
+}

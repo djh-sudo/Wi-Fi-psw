@@ -7,6 +7,8 @@
 #define HIVE_KEY_NAMED_FLAG_ASCII_NAME	0x0020
 #define HIVE_VALUE_KEY_FLAG_ASCII_NAME	0x0001
 
+#define SYSKEY_LENGTH 16
+
 /*
 * HIVE.h Created by djh in 2022-08-05
 * About Register Analysis
@@ -179,3 +181,36 @@ BOOL QueryValue(IN P_HIVE_HANDLE hRegistry,
 
 P_HIVE_VALUE_KEY SearchValue(IN P_HIVE_HANDLE hRegistry, IN HKEY hKey, IN OPTIONAL LPCWSTR lpValueName);
 
+BOOL QueryInfoKey(IN P_HIVE_HANDLE hRegistry,
+	              IN HKEY hKey,
+	              OUT OPTIONAL LPWSTR lpClass,
+	              IN OUT OPTIONAL LPDWORD lpcClass,
+	              IN OPTIONAL LPDWORD lpReserved,
+	              OUT OPTIONAL LPDWORD lpcSubKeys,
+	              OUT OPTIONAL LPDWORD lpcMaxSubKeyLen);
+
+BOOL GetLSASyskey(IN P_HIVE_HANDLE hRegistry, HKEY hLSA, LPBYTE sysKey);
+
+BOOL QueryWithAlloc(IN P_HIVE_HANDLE hRegistry,
+	                IN HKEY hKey,
+	                IN OPTIONAL LPCWSTR lpValueName,
+	                OUT OPTIONAL LPDWORD lpType,
+	                OUT OPTIONAL LPVOID *lpData,
+	                IN OUT OPTIONAL LPDWORD lpcbData);
+
+BOOL OpenAndQueryWithAlloc(IN P_HIVE_HANDLE hRegistry,
+	                       IN HKEY hKey,
+	                       IN OPTIONAL LPCWSTR lpSubKey,
+	                       IN OPTIONAL LPCWSTR lpValueName,
+	                       OUT OPTIONAL LPDWORD lpType,
+	                       OUT OPTIONAL LPVOID *lpData,
+	                       IN OUT OPTIONAL LPDWORD lpcbData);
+
+BOOL GetRegistryEnumKey(IN P_HIVE_HANDLE hRegistry,
+	                    IN HKEY hKey,
+	                    IN DWORD dwIndex,
+	                    OUT LPWSTR lpName,
+	                    IN OUT LPDWORD lpcName,
+	                    IN LPDWORD lpReserved,
+	                    OUT OPTIONAL LPWSTR lpClass,
+	                    IN OUT OPTIONAL LPDWORD lpcClass);
