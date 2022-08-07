@@ -362,6 +362,20 @@ public:
 			std::string iv = HMACHash.substr(32, 16);
 			std::string plain = SSLHelper::AesCBCDecrypt(m_pMasterKeys->MasterKey->pbKey, keyLen, key.c_str(), 32, iv.c_str());
 			status = MemoryVerify((char *)plain.c_str(), keyLen, m_secret, 20);
+			if (status == FALSE) {
+				break;
+			}
+			m_szMasterKey = keyLen - 80;
+			if (m_szMasterKey <= 0) {
+				status = FALSE;
+				break;
+			}
+			m_masterKey = new BYTE[m_szMasterKey];
+			if (m_masterKey == NULL) {
+				status = FALSE;
+				break;
+			}
+			memcpy(m_masterKey, (char*)plain.c_str() + 80, m_szMasterKey);
 		} while (FALSE);
 		// TODO ...
 		return status;
@@ -372,6 +386,10 @@ public:
 		memset(m_secret, 0, SHA_DIGEST_LENGTH);
 		m_hSecurity = NULL;
 		m_pMasterKeys = NULL;
+		m_masterKey = NULL;
+		m_WiFiBlob = NULL;
+		m_szMasterKey = 0;
+		m_SZWiFiBlob = 0;
 	}
 
 	~WIFI_PASSWORD() = default;
@@ -381,4 +399,8 @@ private:
 	BYTE m_secret[SHA_DIGEST_LENGTH];
 	P_HIVE_HANDLE m_hSecurity;
 	P_DPAPI_MASTERKEYS m_pMasterKeys;
+	PBYTE m_masterKey;
+	DWORD m_szMasterKey;
+	PBYTE m_WiFiBlob;
+	DWORD m_SZWiFiBlob;
 };
