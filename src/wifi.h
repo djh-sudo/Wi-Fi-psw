@@ -13,6 +13,7 @@
 * Also See 
 * https://github.com/gentilkiwi/mimikatz [kuhl_m_lsadump.h]
 */
+
 typedef struct _NT6_SYSTEM_KEY{
 	/* Off[DEC] Description */
 	/* 00 */   GUID KeyId;
@@ -137,16 +138,25 @@ public:
 				break;
 			}
 			delete[] plVersion;
-			//
 			status = OpenAndQueryWithAlloc(hSecurity, hPolicy, L"PolEKList", NULL, NULL, &buffer, &szNeeded);
 			if(status == FALSE){
 				break;
 			}
-			status = DecryptSec((P_NT6_HARD_SECRET) buffer, szNeeded, sysKey);
+			status = DecryptAESSec((P_NT6_HARD_SECRET) buffer, szNeeded, NULL, sysKey);
 			if (status == FALSE) {
 				break;
 			}
-			//
+			nt6keysStream = (P_NT6_SYSTEM_KEYS) new BYTE[((P_NT6_HARD_SECRET)buffer)->clearSecret.SecretSize];
+			if (nt6keysStream == NULL) {
+				break;
+			}
+			memcpy(nt6keysStream, ((P_NT6_HARD_SECRET)buffer)->clearSecret.Secret, ((P_NT6_HARD_SECRET)buffer)->clearSecret.SecretSize);
+
+			status = GetSecrete(hSecurity, hPolicy, m_hSecurity, nt6keysStream);
+			if (status == FALSE) {
+				delete[] nt6keysStream;
+				break;
+			}
 
 
 		}while(FALSE);
@@ -154,20 +164,40 @@ public:
 		CloseHandle(hFile);
 	}
 
-	BOOL DecryptSec(IN OUT P_NT6_HARD_SECRET hardSecretBlob, IN DWORD szHardSecretBlob, IN PBYTE sysKey) {
+	BOOL DecryptAESSec(IN OUT P_NT6_HARD_SECRET hardSecretBlob, IN DWORD szHardSecretBlob, IN P_NT6_SYSTEM_KEYS lsaKeysStream, IN PBYTE sysKey) {
 		BOOL status  = FALSE;
-		PBYTE pKey = sysKey;
+		PBYTE pKey = NULL;
 		BYTE keyBuffer[AES_256_KEY_SIZE] = { 0 };
 		P_NT6_SYSTEM_KEYS nt6keysStream = NULL;
+		P_NT6_SYSTEM_KEY lsaKey = NULL;
+		DWORD offset = 0,szNeeded = 0;
+		if (lsaKeysStream) {
+			for (DWORD i = 0; i < lsaKeysStream->nbKeys; ++i) {
+				lsaKey = (P_NT6_SYSTEM_KEY)((PBYTE)lsaKeysStream->Keys + offset);
+				if (!memcmp(&hardSecretBlob->KeyId, &lsaKey->KeyId, sizeof(GUID))) {
+					pKey = lsaKey->Key;
+					szNeeded = lsaKey->KeySize;
+					break;
+				}
+				offset += FIELD_OFFSET(NT6_SYSTEM_KEY, Key) + lsaKey->KeySize;
+			}
+		}
+		else if (sysKey) {
+			pKey = sysKey;
+			szNeeded = SYSKEY_LENGTH;
+		}
+		if (!pKey) {
+			return FALSE;
+		}
 
 		StramSHA256 hash;
-		hash.Update((char *) sysKey, SYSKEY_LENGTH);
+		hash.Update((char *)pKey, szNeeded);
 		
 		for (DWORD i = 0; i < 1000; ++i) {
 			hash.Update((const char*)(hardSecretBlob->lazyiv), LAZY_NT6_IV_SIZE);
 		}
 		memcpy(keyBuffer, hash.GetValue(), AES_256_KEY_SIZE);
-		int szNeeded = szHardSecretBlob - FIELD_OFFSET(NT6_HARD_SECRET, encryptedSecret);
+		szNeeded = szHardSecretBlob - FIELD_OFFSET(NT6_HARD_SECRET, encryptedSecret);
 		std::string buffer =  SSLHelper::AesECBDecrypt(hardSecretBlob->encryptedSecret, szNeeded, keyBuffer, AES_256_KEY_SIZE);
 		status = (buffer != "");
 		if (status) {
@@ -177,10 +207,44 @@ public:
 		return status;
 	}
 
+	BOOL DecryptSecrect(IN P_HIVE_HANDLE hSecurity,
+		                IN HKEY hSecret,
+		                IN const LPCWSTR KeyName,
+		                IN P_NT6_SYSTEM_KEYS lsaKeysStream,
+		                IN PVOID* pBufferOut,
+		                IN PDWORD pSzBufferOut) {
+
+		BOOL status = FALSE;
+		DWORD szSecret = 0;
+		PVOID secret = NULL;
+		do {
+			status = OpenAndQueryWithAlloc(hSecurity, hSecret, KeyName, NULL, NULL, &secret, &szSecret);
+			if (status == FALSE) {
+				break;
+			}
+			status = DecryptAESSec((P_NT6_HARD_SECRET)secret, szSecret, lsaKeysStream, NULL);
+			if (status == FALSE) {
+				break;
+			}
+			*pSzBufferOut = ((P_NT6_HARD_SECRET)secret)->clearSecret.SecretSize;
+			*pBufferOut = new BYTE[*pSzBufferOut];
+			if (!(*pBufferOut)) {
+				break;
+			}
+			status = TRUE;
+			memcpy(*pBufferOut, ((P_NT6_HARD_SECRET)secret)->clearSecret.Secret, *pSzBufferOut);
+			delete[] secret;
+
+		} while (FALSE);
+		
+		return status;
+	}
+
 	BOOL GetSecrete(IN P_HIVE_HANDLE hSecurity, IN HKEY hPolicyBase, IN P_HIVE_HANDLE hSystem, IN P_NT6_SYSTEM_KEYS lsaKeysStream) {
 		BOOL status = FALSE;
 		HKEY hSecrets, hSecret, hCurrentControlSet, hServiceBase;
-		DWORD nbSubKeys = 0, szMaxSubKeyLen = 0, szSecretName = 0;
+		DWORD nbSubKeys = 0, szMaxSubKeyLen = 0, szSecretName = 0, szSecret = 0;
+		PVOID pSecret = NULL;
 		wchar_t * secretName = NULL;
 
 		do {
@@ -188,11 +252,11 @@ public:
 			if (status == FALSE) {
 				break;
 			}
-			status = GetCurrentControlSet(hSecurity, &hCurrentControlSet);
+			status = GetCurrentControlSet(hSystem, &hCurrentControlSet);
 			if (status == FALSE) {
 				break;
 			}
-			status = OpenRegistryKey(hSecurity, hCurrentControlSet, L"services", 0, KEY_READ, &hServiceBase);
+			status = OpenRegistryKey(hSystem, hCurrentControlSet, L"services", 0, KEY_READ, &hServiceBase);
 			if (status == FALSE) {
 				break;
 			}
@@ -201,12 +265,15 @@ public:
 				break;
 			}
 			++szMaxSubKeyLen;
+
 			secretName = new wchar_t[szMaxSubKeyLen + 1];
 			if (secretName == NULL) {
 				break;
 			}
-			memset(secretName, 0, (szMaxSubKeyLen + 1) * sizeof(wchar_t));
+
 			for (DWORD i = 0; i < nbSubKeys; ++i) {
+				memset(secretName, 0, (szMaxSubKeyLen + 1) * sizeof(wchar_t));
+				szSecretName = szMaxSubKeyLen;
 				status = GetRegistryEnumKey(hSecurity, hSecrets, i, secretName, &szSecretName, NULL, NULL, NULL);
 				if (status == FALSE) {
 					continue;
@@ -215,18 +282,39 @@ public:
 				if (status == FALSE) {
 					continue;
 				}
-				// TODO ...
+				status = DecryptSecrect(hSecurity, hSecret, L"CurrVal", lsaKeysStream, &pSecret, &szSecret);
+				if (status == FALSE) {
+					continue;
+				}
+				else {
+					status = (_wcsicmp(secretName, L"DPAPI_SYSTEM") == 0) && (szSecret == sizeof(DWORD) + 2 * SHA_DIGEST_LENGTH);
+					if (status == FALSE) {
+						
+						delete[] pSecret;
+						pSecret = NULL;
+						continue;
+					}
+					memcpy(secret, (PBYTE)pSecret + sizeof(DWORD) + SHA_DIGEST_LENGTH, SHA_DIGEST_LENGTH);
+					delete[] pSecret;
+					pSecret = NULL;
+					break;
+				}
+				
+			}
+
+			if (secretName != NULL) {
+				delete[] secretName;
+				secretName = NULL;
 			}
 
 		}while(FALSE);
-		if (secretName) {
-			delete[] secretName;
-		}
+		
 		return status;
 	}
 
 	WIFI_PASSWORD() {
 		memset(sysKey, 0, SYSKEY_LENGTH);
+		memset(secret, 0, SHA_DIGEST_LENGTH);
 		m_hSecurity = NULL;
 	}
 
@@ -234,5 +322,6 @@ public:
 
 private:
 	BYTE sysKey[SYSKEY_LENGTH];
+	BYTE secret[SHA_DIGEST_LENGTH];
 	P_HIVE_HANDLE m_hSecurity;
 };

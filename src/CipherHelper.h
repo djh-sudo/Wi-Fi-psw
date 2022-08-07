@@ -56,7 +56,7 @@ public:
 		memcpy(buffer, bptr->data, bptr->length);
 		BIO_free_all(b64);
 		res = std::string(buffer,bptr->length);
-		delete buffer;
+		delete[] buffer;
 		return res;
 	}
 
@@ -64,7 +64,7 @@ public:
 		BIO* b64 = NULL;
 		BIO* bmem = NULL;
 		int len = base64.length();
-		char *buffer = new char[len + 1];
+		char * buffer = new char[len + 1];
 		memset(buffer, 0, len);
 		b64 = BIO_new(BIO_f_base64());
 		if (!b64) {
@@ -78,7 +78,7 @@ public:
 		szLen = BIO_read(bmem, buffer, len);
 		BIO_free_all(b64);
 		std::string res = std::string(buffer, len);
-		delete buffer;
+		delete[] buffer;
 		return res;
 	}
 

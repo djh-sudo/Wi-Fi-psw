@@ -83,7 +83,7 @@ BOOL GetCurrentControlSet(IN P_HIVE_HANDLE hRegistry, PHKEY phCurrentControlSet)
 
 BOOL OpenRegistryKey(IN P_HIVE_HANDLE hRegistry,
 	                 IN HKEY hKey,
-	                 IN OPTIONAL LPCWSTR lpSubKey,
+	                 IN OPTIONAL const LPCWSTR lpSubKey,
 	                 IN DWORD options,
 	                 IN REGSAM samDesired,
 	                 OUT PHKEY phkResult) {
@@ -369,7 +369,8 @@ BOOL OpenAndQueryWithAlloc(IN P_HIVE_HANDLE hRegistry,
 }
 
 BOOL GetRegistryEnumKey(IN P_HIVE_HANDLE hRegistry,
-	                    IN HKEY hKey, IN DWORD dwIndex,
+	                    IN HKEY hKey,
+	                    IN DWORD dwIndex,
 	                    OUT LPWSTR lpName,
 	                    IN OUT LPDWORD lpcName,
 	                    IN LPDWORD lpReserved,
@@ -423,7 +424,8 @@ BOOL GetRegistryEnumKey(IN P_HIVE_HANDLE hRegistry,
 
 		if(status)
 			lpName[szInCar] = L'\0';
-		*lpcClass = szInCar;
+		*lpcName = szInCar;
+
 		if (lpcClass){
 			szInCar = pCandidateKn->szClassName / sizeof(wchar_t);
 			if(lpClass)
@@ -434,9 +436,10 @@ BOOL GetRegistryEnumKey(IN P_HIVE_HANDLE hRegistry,
 					lpClass[szInCar] = L'\0';
 				}
 			}
+			*lpcClass = szInCar;
 		}
-		*lpcClass = szInCar;
 		
 	}while(FALSE);
 	return status;
 }
+
