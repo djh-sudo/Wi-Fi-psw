@@ -7,6 +7,7 @@
 #include <openssl/md5.h>
 #include <openssl/sha.h>
 #include <openssl/des.h>
+#include <openssl/hmac.h>
 
 
 #pragma comment(lib, "libssl.lib")
@@ -183,10 +184,10 @@ public:
 		return res;
 	}
 
-	// AES
-	static std::string AesCBCEncrypt(std::string plain, int data_len, std::string key, int& szLen, int key_len, std::string iv = "") {
+	// AES-CBC
+	static std::string AesCBCEncrypt(const void *plain, int data_len, const void *key, int& szLen, int key_len, const void *iv = "") {
 		AES_KEY aes_key;
-		if (AES_set_encrypt_key((unsigned char*)key.c_str(), key_len << 3, &aes_key) < 0) {
+		if (AES_set_encrypt_key((unsigned char*)key, key_len << 3, &aes_key) < 0) {
 			return "";
 		}
 
@@ -200,7 +201,7 @@ public:
 		szLen = data_len;
 		szLen += padding;
 
-		std::string data = plain;
+		std::string data = std::string((const char *)plain, data_len);
 		while (padding) {
 			data += (char)pad_num;
 			padding--;
@@ -212,17 +213,17 @@ public:
 		std::string res = "";
 		int block_num = szLen >> 4;
 		for (int i = 0; i < block_num; ++i) {
-			memcpy(input,data.c_str() + i * AES_BLOCK_SIZE, AES_BLOCK_SIZE);
+			memcpy(input, data.c_str() + i * AES_BLOCK_SIZE, AES_BLOCK_SIZE);
 			memset(output, 0, AES_BLOCK_SIZE);
-			AES_cbc_encrypt((const unsigned char*)input, output, AES_BLOCK_SIZE, &aes_key, (unsigned char*)iv.c_str(), AES_ENCRYPT);
+			AES_cbc_encrypt((const unsigned char*)input, output, AES_BLOCK_SIZE, &aes_key, (unsigned char*)iv, AES_ENCRYPT);
 			res += std::string((const char*)output, AES_BLOCK_SIZE);
 		}
 		return res;
 	}
 
-	static std::string AesCBCDecrypt(std::string src,int data_len, std::string key, int key_len, std::string iv = ""){
+	static std::string AesCBCDecrypt(const void *src, int data_len, const void *key, int key_len, const void *iv = "") {
 		AES_KEY aes_key;
-		if (AES_set_decrypt_key((const unsigned char*)key.c_str(), key_len << 3, &aes_key) < 0) {
+		if (AES_set_decrypt_key((const unsigned char*)key, key_len << 3, &aes_key) < 0) {
 			return "";
 		}
 		// 
@@ -232,18 +233,24 @@ public:
 		int block_num = data_len >> 4;
 		for (int i = 0; i < block_num; ++i) {
 			memset(output, 0, AES_BLOCK_SIZE);
-			memcpy(input, src.c_str() + i * AES_BLOCK_SIZE, AES_BLOCK_SIZE);
-			AES_cbc_encrypt((const unsigned char*)input, output, AES_BLOCK_SIZE, &aes_key, (unsigned char*)iv.c_str() ,AES_DECRYPT);
+			memcpy(input, (char *)src + i * AES_BLOCK_SIZE, AES_BLOCK_SIZE);
+			AES_cbc_encrypt((const unsigned char*)input, output, AES_BLOCK_SIZE, &aes_key, (unsigned char*)iv, AES_DECRYPT);
 			res += std::string((char*)output, AES_BLOCK_SIZE);
 		}
 
 		return res;
 	}
+	// AES-CBC(overload)
+	static std::string AesCBCEncrypt(std::string plain, int data_len, std::string key, int& szLen, int key_len, std::string iv = "") {
+		return AesCBCEncrypt(plain.c_str(), data_len, key.c_str(), szLen, key_len, iv.c_str());
+	}
 
-	
+	static std::string AesCBCDecrypt(std::string src,int data_len, std::string key, int key_len, std::string iv = ""){
+		return AesCBCDecrypt(src.c_str(), data_len, key.c_str(), key_len, iv.c_str());
+	}
 
 	// AES-ECB
-	static std::string AesECBEncrypt(void *plain, int data_len, void *key, int& szLen, int key_len) {
+	static std::string AesECBEncrypt(const void *plain, int data_len, const void *key, int& szLen, int key_len) {
 		AES_KEY aes_key;
 		if (AES_set_encrypt_key((unsigned char*)key, key_len << 3, &aes_key) < 0) {
 			return "";
@@ -279,7 +286,7 @@ public:
 		return res;
 	}
 
-	static std::string AesECBDecrypt(void *src, int data_len, void *key, int key_len) {
+	static std::string AesECBDecrypt(const void *src, int data_len, const void *key, int key_len) {
 		AES_KEY aes_key;
 		if (AES_set_decrypt_key((const unsigned char*)key, key_len << 3, &aes_key) < 0) {
 			return "";
@@ -305,7 +312,74 @@ public:
 	static std::string AesECBDecrypt(std::string src,int data_len, std::string key, int key_len) {
 		return AesECBDecrypt(src.c_str(), data_len, key.c_str(), key_len);
 	}
+	
+	static std::string HMAC_SHA512(const void *key,int key_len, const void *msg, int msg_len) {
+		HMAC_CTX *ctx = HMAC_CTX_new();
+		HMAC_Init_ex(ctx, key, key_len, EVP_sha512(), NULL);
+		HMAC_Update(ctx, (unsigned char *)msg, msg_len);
+		unsigned char output[SHA512_DIGEST_LENGTH] = { 0 };
+		unsigned int output_length = 0;
+		HMAC_Final(ctx, output, &output_length);
+		HMAC_CTX_free(ctx);
+		return std::string((char *)output, output_length);
+	}
 
+	static std::string PBKDF2_SHA512(const void *password, int pass_len, const void *salt, int salt_len, int iteration, int szLen) {
+		BOOL status = FALSE;
+		DWORD szHmac = SHA512_DIGEST_LENGTH;
+		PBYTE asalt = NULL, obuf = NULL, dl = NULL;
+		std::string key = "";
+		do {
+			asalt = new BYTE[salt_len + sizeof(DWORD)];
+			if (asalt == NULL) {
+				break;
+			}
+			memset(asalt, 0, salt_len + sizeof(DWORD));
+
+			obuf = new BYTE[szHmac];
+			if (obuf == NULL) {
+				break;
+			}
+			memset(obuf, 0, szHmac);
+			
+			dl = new BYTE[szHmac];
+			if (dl == NULL) {
+				break;
+			}
+			memset(dl, 0, szHmac);
+
+			status = TRUE;
+			memcpy(asalt, salt, salt_len);
+			for (DWORD i = 1; szLen > 0; ++i) {
+				*(PDWORD)(asalt + salt_len) = _byteswap_ulong(i);
+				memcpy(dl, HMAC_SHA512(password, pass_len, asalt, salt_len + 4).c_str(), szHmac);
+				memcpy(obuf, dl, szHmac);
+				for (DWORD k = 1; k < iteration; ++k) {
+					memcpy(dl, HMAC_SHA512(password, pass_len, dl, szHmac).c_str(), szHmac);
+					for (DWORD j = 0; j < szHmac; ++j) {
+						obuf[j] ^= dl[j];
+					}
+					memcpy(dl, obuf, szHmac);
+				}
+				DWORD r = min(szLen, szHmac);
+				key += std::string((char *)obuf, r);
+				szLen -= r;
+			}
+		} while (FALSE);
+		if (dl) {
+			delete[] dl;
+			dl = NULL;
+		}
+		if (obuf) {
+			delete[] obuf;
+			obuf = NULL;
+		}
+		if (asalt) {
+			delete[] asalt;
+			asalt = NULL;
+		}
+		return key;
+	}
 };
 
 

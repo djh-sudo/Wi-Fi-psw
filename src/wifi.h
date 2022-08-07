@@ -2,6 +2,7 @@
 #include <iostream>
 #include <string>
 #include "HIVE.h"
+#include "dpapi.h"
 #include "CipherHelper.h"
 
 #define SYSKEY_LENGTH  16
@@ -97,7 +98,7 @@ public:
 			if (status == FALSE) {
 				break;
 			}
-			status = GetLSASyskey(m_hSecurity, hComputerNameOrLSA, sysKey);
+			status = GetLSASyskey(m_hSecurity, hComputerNameOrLSA, m_sysKey);
 
 		}while(FALSE);
 		
@@ -116,7 +117,7 @@ public:
 
 		HANDLE hFile = CreateFileW(lpFileName, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
 		if (hFile == INVALID_HANDLE_VALUE) {
-			return false;
+			return FALSE;
 		}
 
 		do {
@@ -142,7 +143,7 @@ public:
 			if(status == FALSE){
 				break;
 			}
-			status = DecryptAESSec((P_NT6_HARD_SECRET) buffer, szNeeded, NULL, sysKey);
+			status = DecryptAESSec((P_NT6_HARD_SECRET) buffer, szNeeded, NULL, m_sysKey);
 			if (status == FALSE) {
 				break;
 			}
@@ -294,7 +295,7 @@ public:
 						pSecret = NULL;
 						continue;
 					}
-					memcpy(secret, (PBYTE)pSecret + sizeof(DWORD) + SHA_DIGEST_LENGTH, SHA_DIGEST_LENGTH);
+					memcpy(m_secret, (PBYTE)pSecret + sizeof(DWORD) + SHA_DIGEST_LENGTH, SHA_DIGEST_LENGTH);
 					delete[] pSecret;
 					pSecret = NULL;
 					break;
@@ -312,16 +313,72 @@ public:
 		return status;
 	}
 
+	BOOL GetEncMasterKey(LPCWSTR lpFileName) {
+		BOOL status = FALSE;
+		LPBYTE buffer = NULL;
+		DWORD szBuffer = 0;
+
+		status = ReadMasterKeyFile(lpFileName, &buffer, &szBuffer);
+		do {
+			if (status == FALSE) {
+				break;
+			}
+			m_pMasterKeys = (P_DPAPI_MASTERKEYS)new BYTE[sizeof(DPAPI_MASTERKEYS)];
+			
+			if (m_pMasterKeys == NULL) {
+				break;
+			}
+			memset(m_pMasterKeys, 0, sizeof(DPAPI_MASTERKEYS));
+			memcpy(m_pMasterKeys, buffer, FIELD_OFFSET(DPAPI_MASTERKEYS, MasterKey));
+
+			szBuffer = m_pMasterKeys->dwMasterKeyLen;
+			m_pMasterKeys->MasterKey = (P_DPAPI_MASTERKEY)new BYTE[szBuffer];
+			if (m_pMasterKeys->MasterKey == NULL) {
+				break;
+			}
+			memcpy(m_pMasterKeys->MasterKey, buffer + FIELD_OFFSET(DPAPI_MASTERKEYS, MasterKey), szBuffer);
+
+		} while (FALSE);
+		if (buffer) {
+			delete[] buffer;
+			buffer = NULL;
+		}
+		return status;
+	}
+
+	BOOL DecryptMasterKey() {
+		BOOL status = FALSE;
+		DWORD keyLen = m_pMasterKeys->dwMasterKeyLen - FIELD_OFFSET(DPAPI_MASTERKEY, pbKey);
+		if (m_pMasterKeys == NULL) {
+			return FALSE;
+		}
+		do {
+			std::string HMACHash = SSLHelper::PBKDF2_SHA512(
+				      /*password*/ m_secret, 20,
+				      /*  salt  */ m_pMasterKeys->MasterKey->salt, 16,
+				      /* rounds */ m_pMasterKeys->MasterKey->rounds,48);
+
+			std::string key = HMACHash.substr(0, 32);
+			std::string iv = HMACHash.substr(32, 16);
+			std::string plain = SSLHelper::AesCBCDecrypt(m_pMasterKeys->MasterKey->pbKey, keyLen, key.c_str(), 32, iv.c_str());
+			status = MemoryVerify((char *)plain.c_str(), keyLen, m_secret, 20);
+		} while (FALSE);
+		// TODO ...
+		return status;
+	}
+
 	WIFI_PASSWORD() {
-		memset(sysKey, 0, SYSKEY_LENGTH);
-		memset(secret, 0, SHA_DIGEST_LENGTH);
+		memset(m_sysKey, 0, SYSKEY_LENGTH);
+		memset(m_secret, 0, SHA_DIGEST_LENGTH);
 		m_hSecurity = NULL;
+		m_pMasterKeys = NULL;
 	}
 
 	~WIFI_PASSWORD() = default;
 
 private:
-	BYTE sysKey[SYSKEY_LENGTH];
-	BYTE secret[SHA_DIGEST_LENGTH];
+	BYTE m_sysKey[SYSKEY_LENGTH];
+	BYTE m_secret[SHA_DIGEST_LENGTH];
 	P_HIVE_HANDLE m_hSecurity;
+	P_DPAPI_MASTERKEYS m_pMasterKeys;
 };
