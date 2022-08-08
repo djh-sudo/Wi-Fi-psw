@@ -1,12 +1,18 @@
 #include <string>
 #include "dpapi.h"
+#include "wow64.hpp"
 #include "CipherHelper.h"
 
 
 BOOL ReadMasterKeyFile(IN LPCWSTR lpFileName, OUT LPBYTE *output, OUT LPDWORD szOutput) {
 	BOOL status = FALSE;
-	HANDLE hFile = CreateFileW(lpFileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+	HANDLE hFile = INVALID_HANDLE_VALUE;
+	{
+		zl::WinUtils::ZLWow64Guard guard;
+		hFile = CreateFileW(lpFileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+	}
 	DWORD szFile = 0;
+
 	if (hFile == INVALID_HANDLE_VALUE) {
 		return FALSE;
 	}

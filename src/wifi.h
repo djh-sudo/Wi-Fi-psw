@@ -4,6 +4,9 @@
 #include "HIVE.h"
 #include "dpapi.h"
 #include "CipherHelper.h"
+#include "tinyxml2.h"
+#include "wow64.hpp"
+
 
 #define SYSKEY_LENGTH  16
 #define LAZY_NT6_IV_SIZE 32
@@ -80,7 +83,11 @@ public:
 		BOOL status = FALSE;
 		HKEY hCurrentControlSet, hComputerNameOrLSA;
 
-		HANDLE hfile = CreateFileW(lpFileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+		HANDLE hfile = INVALID_HANDLE_VALUE;
+		{
+			zl::WinUtils::ZLWow64Guard guard;
+			hfile = CreateFileW(lpFileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+		}
 		if (hfile == INVALID_HANDLE_VALUE) {
 			return FALSE;
 		}
@@ -105,7 +112,7 @@ public:
 		CloseHandle(hfile);
 		return status;
 	}
-	/*Get LSA Key from Register dump file*/
+	/*Get LSA Key from Register dump file */
 	BOOL GetLSAKeyAndSecrete(LPCWSTR lpFileName) {
 		BOOL status = FALSE;
 		P_HIVE_HANDLE hSecurity;
@@ -114,8 +121,19 @@ public:
 		LPVOID buffer = NULL;
 		DWORD szNeeded = 0;
 		P_POL_REVISION plVersion;
-
-		HANDLE hFile = CreateFileW(lpFileName, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+		
+		HANDLE hFile = INVALID_HANDLE_VALUE;
+		{
+			// Wow64RevertWow64FsRedirection
+			/*
+			* If it's a 32-bit app running on a 64-bit OS, 
+			* then calling Wow64DisableWow64FsRedirection() 
+			* before your call to CreateFile will read from "C:\Windows\System32" 
+			* instead of "C:\Windows\Syswow64",
+			*/
+			zl::WinUtils::ZLWow64Guard guard;
+			hFile = CreateFileW(lpFileName, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+		}
 		if (hFile == INVALID_HANDLE_VALUE) {
 			return FALSE;
 		}
@@ -163,9 +181,100 @@ public:
 		}while(FALSE);
 		
 		CloseHandle(hFile);
+		return status;
 	}
 
-	BOOL DecryptAESSec(IN OUT P_NT6_HARD_SECRET hardSecretBlob, IN DWORD szHardSecretBlob, IN P_NT6_SYSTEM_KEYS lsaKeysStream, IN PBYTE sysKey) {
+	/*Get WiFi enc-password from XML file */
+	BOOL GetWiFiXMLInfo(LPCWSTR lpFileName) {
+		BOOL status = FALSE;
+		tinyxml2::XMLDocument doc;
+		char path[MAX_PATH] = { 0 };
+		PBYTE WiFiBlob = NULL;
+		status = WideCharToMultiByte(CP_ACP, 0, lpFileName, -1, path, MAX_PATH, NULL, NULL);
+		do {
+			if (status == FALSE) {
+				break;
+			}
+			status = doc.LoadFile(path) == 0;
+			if (status == FALSE) {
+				break;
+			}
+			tinyxml2::XMLElement* root = doc.RootElement();
+			if (root == NULL) {
+				break;
+			}
+
+			tinyxml2::XMLElement *key = root->FirstChildElement("MSM")
+				                        ->FirstChildElement("security")
+				                        ->FirstChildElement("sharedKey")
+				                        ->FirstChildElement("keyMaterial");
+			tinyxml2::XMLElement *name = root->FirstChildElement("SSIDConfig")
+				                         ->FirstChildElement("SSID")
+				                         ->FirstChildElement("name");
+			if (key == NULL) {
+				break;
+			}
+			std::string blob = key->GetText();
+
+			if (name == NULL) {
+				break;
+			}
+
+			std::string nameId = name->GetText();
+			m_szUserId = nameId.size() + 1;
+			m_userId = new BYTE[m_szUserId];
+			if (m_userId == NULL) {
+				break;
+			}
+			memset(m_userId, 0 ,m_szUserId);
+			memcpy(m_userId, nameId.c_str(), m_szUserId);
+			DWORD szWiFiBlob = blob.size() >> 1;
+			WiFiBlob = new BYTE[szWiFiBlob];
+			memset(WiFiBlob, 0, szWiFiBlob);
+			memcpy(WiFiBlob, SSLHelper::convert_ASCII(blob).c_str(), szWiFiBlob);
+			memcpy(&m_guidMasterKey, &((P_DPAPI_BLOB)WiFiBlob)->guidMasterKey, sizeof(GUID));
+
+			DWORD acc = ((P_DPAPI_BLOB)WiFiBlob)->dwDescriptionLen; 
+			m_szpbSalt = *(PDWORD)(WiFiBlob + acc + 56);
+			m_pSalt = new BYTE[m_szpbSalt];
+			if (m_pSalt == NULL) {
+				break;
+			}
+			memset(m_pSalt, 0, m_szpbSalt);
+			memcpy(m_pSalt, WiFiBlob + acc + 60, m_szpbSalt);
+			acc += m_szpbSalt;
+
+			acc += *(PDWORD)(WiFiBlob + acc + 60);
+			acc += *(PDWORD)(WiFiBlob + acc + 72);
+
+			m_szpbData = *(PDWORD)(WiFiBlob + acc + 76);
+			m_pbData = new BYTE[m_szpbData];
+			if (m_pbData == NULL) {
+				break;
+			}
+			memset(m_pbData, 0, m_szpbData);
+			memcpy(m_pbData, WiFiBlob + acc + 80, m_szpbData);
+			
+			acc += m_szpbData;
+			acc += *(PDWORD)(WiFiBlob + acc + 80);
+			if (acc + 84 != szWiFiBlob) {
+				break;
+			}
+			status = TRUE;
+
+		}while(FALSE);
+
+		if (WiFiBlob != NULL) {
+			delete[] WiFiBlob;
+			WiFiBlob = NULL;
+		}
+		return status;
+	}
+
+	BOOL DecryptAESSec(IN OUT P_NT6_HARD_SECRET hardSecretBlob,
+		               IN DWORD szHardSecretBlob,
+		               IN P_NT6_SYSTEM_KEYS lsaKeysStream,
+		               IN PBYTE sysKey) {
 		BOOL status  = FALSE;
 		PBYTE pKey = NULL;
 		BYTE keyBuffer[AES_256_KEY_SIZE] = { 0 };
@@ -241,7 +350,10 @@ public:
 		return status;
 	}
 
-	BOOL GetSecrete(IN P_HIVE_HANDLE hSecurity, IN HKEY hPolicyBase, IN P_HIVE_HANDLE hSystem, IN P_NT6_SYSTEM_KEYS lsaKeysStream) {
+	BOOL GetSecrete(IN P_HIVE_HANDLE hSecurity,
+		            IN HKEY hPolicyBase,
+		            IN P_HIVE_HANDLE hSystem,
+		            IN P_NT6_SYSTEM_KEYS lsaKeysStream) {
 		BOOL status = FALSE;
 		HKEY hSecrets, hSecret, hCurrentControlSet, hServiceBase;
 		DWORD nbSubKeys = 0, szMaxSubKeyLen = 0, szSecretName = 0, szSecret = 0;
@@ -313,6 +425,23 @@ public:
 		return status;
 	}
 
+	BOOL GetMasterKeyPath(LPCWSTR lpFileName) {
+		BOOL status = FALSE;
+		WCHAR wbuf[64] = { 0 };
+		StringFromGUID2(m_guidMasterKey, wbuf, _countof(wbuf));
+		status = _wcslwr_s(wbuf) == 0;
+		if (status == FALSE) {
+			return FALSE;
+		}
+		wchar_t *basePath = L"C:\\Windows\\System32\\Microsoft\\Protect\\S-1-5-18\\User\\";
+		wcscpy((wchar_t *)lpFileName, basePath);
+		lstrcatW((LPWSTR)lpFileName, wbuf + 1);
+		DWORD len = wcslen(lpFileName);
+		*((wchar_t *)lpFileName + len - 1) = L'\0';
+		status = TRUE;
+		return status;
+	}
+
 	BOOL GetEncMasterKey(LPCWSTR lpFileName) {
 		BOOL status = FALSE;
 		LPBYTE buffer = NULL;
@@ -348,10 +477,11 @@ public:
 
 	BOOL DecryptMasterKey() {
 		BOOL status = FALSE;
-		DWORD keyLen = m_pMasterKeys->dwMasterKeyLen - FIELD_OFFSET(DPAPI_MASTERKEY, pbKey);
 		if (m_pMasterKeys == NULL) {
 			return FALSE;
 		}
+		DWORD keyLen = m_pMasterKeys->dwMasterKeyLen - FIELD_OFFSET(DPAPI_MASTERKEY, pbKey);
+		
 		do {
 			std::string HMACHash = SSLHelper::PBKDF2_SHA512(
 				      /*password*/ m_secret, 20,
@@ -377,30 +507,191 @@ public:
 			}
 			memcpy(m_masterKey, (char*)plain.c_str() + 80, m_szMasterKey);
 		} while (FALSE);
-		// TODO ...
+
 		return status;
+	}
+
+	BOOL DecryptWiFiPassword() {
+		BOOL status = FALSE;
+		do {
+			if (m_masterKey == NULL || m_szMasterKey <= 0) {
+				break;
+			}
+			std::string sha1Key = SSLHelper::sha1(m_masterKey, m_szMasterKey);
+
+			if (m_pSalt == NULL || m_szpbSalt <= 0) {
+				break;
+			}
+			std::string outKey = SSLHelper::HMAC_SHA512(sha1Key.c_str(), SHA_DIGEST_LENGTH, m_pSalt, m_szpbSalt);
+			if (m_pbData == NULL || m_szpbData <= 0) {
+				break;
+			}
+			char iv[16] = { 0 };
+			std::string psw = SSLHelper::AesCBCDecrypt(m_pbData, m_szpbData, outKey.substr(0, 32).c_str(), 32, iv);
+			m_szPassword = psw.size();
+			if (psw[m_szPassword - 1] >= 0 && psw[m_szPassword - 1] <= 0x10) {
+				m_szPassword -= psw[m_szPassword - 1];
+			}
+			m_password = new BYTE[m_szPassword];
+			if (m_password == NULL) {
+				break;
+			}
+			memcpy(m_password, psw.c_str(), m_szPassword);
+			status = TRUE;
+		}while(FALSE);
+
+		return status;
+	}
+
+	BOOL CopyInfo(std::string& id, std::string& psw) {
+		if (m_password == NULL || m_userId == NULL) {
+			return FALSE;
+		}
+		id = std::string((char *)m_userId, m_szUserId);
+		psw = std::string((char *)m_password, m_szPassword);
+		return TRUE;
 	}
 
 	WIFI_PASSWORD() {
 		memset(m_sysKey, 0, SYSKEY_LENGTH);
 		memset(m_secret, 0, SHA_DIGEST_LENGTH);
+		memset(&m_guidMasterKey, 0, sizeof(GUID));
 		m_hSecurity = NULL;
 		m_pMasterKeys = NULL;
+
 		m_masterKey = NULL;
-		m_WiFiBlob = NULL;
 		m_szMasterKey = 0;
-		m_SZWiFiBlob = 0;
+
+		m_pSalt = NULL;
+		m_szpbSalt = 0;
+		
+		m_pSalt = NULL;
+		m_szpbSalt = 0;
+
+		m_password = NULL;
+		m_szPassword = 0;
+
+		m_userId = NULL;
+		m_szUserId = 0;
 	}
 
-	~WIFI_PASSWORD() = default;
+	virtual ~WIFI_PASSWORD() {
+		if (m_pMasterKeys != NULL) {
+			delete[] m_pMasterKeys;
+			m_pMasterKeys = NULL;
+		}
+		if (m_masterKey != NULL) {
+			delete[] m_masterKey;
+			m_masterKey = NULL;
+		}
+		if (m_pbData != NULL) {
+			delete[] m_pbData;
+			m_pbData = NULL;
+		}
+		if (m_pSalt != NULL) {
+			delete[] m_pSalt;
+			m_pSalt = NULL;
+		}
+		if (m_password != NULL) {
+			delete[] m_password;
+			m_password = NULL;
+		}
+		if (m_userId != NULL) {
+			delete[] m_userId;
+			m_userId = NULL;
+		}
+	};
 
 private:
 	BYTE m_sysKey[SYSKEY_LENGTH];
 	BYTE m_secret[SHA_DIGEST_LENGTH];
+	GUID m_guidMasterKey;
 	P_HIVE_HANDLE m_hSecurity;
 	P_DPAPI_MASTERKEYS m_pMasterKeys;
 	PBYTE m_masterKey;
 	DWORD m_szMasterKey;
-	PBYTE m_WiFiBlob;
-	DWORD m_SZWiFiBlob;
+
+	PBYTE m_pbData;
+	DWORD m_szpbData;
+
+	PBYTE m_pSalt;
+	DWORD m_szpbSalt;
+
+	PBYTE m_password;
+	DWORD m_szPassword;
+
+	PBYTE m_userId;
+	DWORD m_szUserId;
+};
+
+class WiFi {
+public:
+	
+	std::string GetPassword() {
+		return m_password;
+	};
+
+	std::string GetNameId() {
+		return m_nameId;
+	}
+	bool Init(LPCWSTR lpSystemBkup, LPCWSTR lpSECURITY, LPCWSTR lpXmlPath) {
+		BOOL status = FALSE;
+		LPCWSTR lpFileName = NULL;
+		do {
+			lpFileName = new wchar_t[MAX_PATH];
+			if (lpFileName == NULL) {
+				break;
+			}
+			memset((char *)lpFileName, 0, MAX_PATH * sizeof(wchar_t));
+			status = m_meta.GetSysKey(lpSystemBkup);
+			if (status ==FALSE) {
+				break;
+			}
+
+			status = m_meta.GetLSAKeyAndSecrete(lpSECURITY);
+			if (status ==FALSE) {
+				break;
+			}
+
+			status = m_meta.GetWiFiXMLInfo(lpXmlPath);
+			if (status ==FALSE) {
+				break;
+			}
+
+			status = m_meta.GetMasterKeyPath(lpFileName);
+			if (status ==FALSE) {
+				break;
+			}
+
+			status = m_meta.GetEncMasterKey(lpFileName);
+			if (status ==FALSE) {
+				break;
+			}
+
+			status = m_meta.DecryptMasterKey();
+			if (status ==FALSE) {
+				break;
+			}
+			
+			status = m_meta.DecryptWiFiPassword();
+			if (status ==FALSE) {
+				break;
+			}
+			status = m_meta.CopyInfo(m_nameId, m_password);
+		}while(FALSE);
+		
+		if (lpFileName != NULL) {
+			delete[] lpFileName;
+			lpFileName = NULL;
+		}
+		return status;
+	}
+
+	WiFi() = default;
+	virtual ~WiFi() = default;
+
+private:
+	WIFI_PASSWORD m_meta;
+	std::string m_password;
+	std::string m_nameId;
 };

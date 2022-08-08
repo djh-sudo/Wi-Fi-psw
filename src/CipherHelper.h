@@ -32,6 +32,16 @@ public:
 		return res;
 	}
 
+	static std::string convert_ASCII(std::string hex){
+		std::string ascii = "";
+		for (size_t i = 0; i < hex.length(); i += 2){
+			std::string part = hex.substr(i, 2);
+			char ch = stoul(part, nullptr, 16);
+			ascii += ch;
+		}
+		return ascii;
+	}
+
 	// base64
 	static std::string Base64Encode(std::string str, int len) {
 		BIO *bmem = NULL;
@@ -90,11 +100,16 @@ public:
 		return std::string((char*)res, MD5_DIGEST_LENGTH);
 	}
 
-	static std::string sha1(std::string src, int len) {
+	static std::string sha1(const void *src, int len) {
 		unsigned char res[SHA_DIGEST_LENGTH + 1] = {0};
-		SHA1((unsigned const char*)src.c_str(), len, res);
+		SHA1((unsigned const char*)src, len, res);
 		return std::string((char*)res, SHA_DIGEST_LENGTH);
 	}
+
+	static std::string sha1(std::string src, int len) {
+		return sha1(src.c_str(), len);
+	}
+
 
 	static std::string sha256(std::string src, int len) {
 		unsigned char res[SHA256_DIGEST_LENGTH + 1] = {0};
@@ -221,7 +236,7 @@ public:
 		return res;
 	}
 
-	static std::string AesCBCDecrypt(const void *src, int data_len, const void *key, int key_len, const void *iv = "") {
+	static std::string AesCBCDecrypt(const void *src, int data_len, const void *key, int key_len, const void *iv) {
 		AES_KEY aes_key;
 		if (AES_set_decrypt_key((const unsigned char*)key, key_len << 3, &aes_key) < 0) {
 			return "";
