@@ -348,7 +348,7 @@ public:
 	void GetMasterKeyPath() {
 		WCHAR wbuf[64] = { 0 };
 		StringFromGUID2(m_guidMasterKey, wbuf, _countof(wbuf));
-		_wcslwr_s(wbuf) == 0;
+		_wcslwr_s(wbuf);
 		m_masterKeyPath = L"C:\\Windows\\System32\\Microsoft\\Protect\\S-1-5-18\\User\\" + std::wstring(wbuf).replace(0, 1, L"");
 		m_masterKeyPath.replace(m_masterKeyPath.size() - 1, 1, L"");
 	}
