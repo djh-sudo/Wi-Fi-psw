@@ -80,7 +80,7 @@ public:
 	}
 
 	bool GetParameter2(char ** buffer, int* szBuffer) {
-		BOOL status = FALSE;
+		LSTATUS status = ERROR_SUCCESS;
 		std::string policy = "SECURITY\\Policy\\";
 		HKEY hPolicy, hKey;
 		DWORD szNeeded;
@@ -120,7 +120,7 @@ public:
 	}
 
 	bool GetParameter3(char ** buffer, int* szBuffer) {
-		BOOL status = FALSE;
+		LSTATUS status = ERROR_SUCCESS;
 		std::string policy = "SECURITY\\Policy\\";
 		HKEY hPolicy, hKey, hSecret, hResult;
 		DWORD szNeeded, nbSubKeys = 0, szMaxSubKeyLen = 0 ,szSecretName = 0;
